@@ -2,125 +2,119 @@
 /* eslint-disable no-unused-vars */
 require('dotenv').config()
 const express = require('express')
+const mongoose = require('mongoose')
 const morgan = require('morgan')
 const cors = require('cors')
-const app = express()
 const Person = require('./models/person')
 
-app.use(express.static('dist'))
-app.use(express.json())
-app.use(cors())
+const app = express()
 
+// ====== MIDDLEWARE ======
+app.use(express.json())       // Parse JSON bodies
+app.use(cors())               // Enable CORS
 
-
+// Morgan logging, including request body
 morgan.token('body', (req) => JSON.stringify(req.body))
 app.use(morgan(':method :url :status :res[content-length] - :response-time ms :body'))
 
-const currentDate = new Date()
-const weekday = currentDate.toLocaleString('en-US', { weekday: 'long' })
-const month = currentDate.toLocaleString('en-US', { month: 'long' })
-const dayOfMonth = currentDate.getDate()
-const year = currentDate.getFullYear()
-const time = currentDate.toLocaleTimeString()
+// ====== DATABASE ======
+mongoose.set('strictQuery', false)
+const url = process.env.MONGODB_URI
+console.log('connecting to', url)
 
-//FETCHES "HOME" PAGE
-app.get('/', (request, response) => {
-  response.send('<h1>Hello World!</h1>')
+mongoose.connect(url)
+  .then(() => console.log('Connected to MongoDB'))
+  .catch(error => console.error('Error connecting to MongoDB:', error.message))
+
+// ====== ROUTES ======
+
+// Root route
+app.get('/', (req, res) => {
+  res.send('<h1>Phonebook API is running</h1>')
 })
 
-//FETCHES INFO PAGE
-app.get('/info', async (request, response) => {
+// Info route
+app.get('/info', async (req, res) => {
   try {
-    const personCount = await Person.countDocuments({})
-    response.send(`
-      <p>Phonebook has info for ${personCount} people</p> 
-      <p>${weekday} ${month} ${dayOfMonth} ${year} ${time}</p>
-    `)
+    const count = await Person.countDocuments({})
+    res.send(`<p>Phonebook has info for ${count} people</p>`)
   } catch (error) {
     console.error(error)
-    response.status(500).send('Internal Server Error')
+    res.status(500).send('Internal Server Error')
   }
 })
 
-
-//FETCHES ALL RESOURCES
-app.get('/api/persons', (request, response) => {
-  Person.find({}).then(persons => response.json(persons))
-})
-
-//FETCHES IDENTIFIED RESOURCE
-app.get('/api/persons/:id', (request, response, next) => {
-  Person.findById(request.params.id)
-    .then(person => {
-      if (person) {
-        response.json(person)
-      } else {
-        response.status(404).end()
-      }
-    })
-    .catch(error => next(error))
-})
-
-//CREATES NEW RESOURCE
-app.post('/api/persons', (request, response, next) => {
-  const body = request.body
-
-  if (body.name === undefined || body.number === undefined) {
-    return response.status(400).json({ error: 'content missing' })
+// Get all persons
+app.get('/api/persons', async (req, res, next) => {
+  try {
+    const persons = await Person.find({})
+    res.json(persons)
+  } catch (error) {
+    next(error)
   }
-
-  const person = new Person({
-    name: body.name,
-    number: body.number,
-    favorite: false,
-  })
-
-  person
-    .save()
-    .then((savedPerson) => {
-      response.json(savedPerson)
-    })
-    .catch((error) => next(error))
 })
 
-//UPDATE IDENTIFIED RESOURCE
-app.put('/api/persons/:id', (request, response, next) => {
-  const { name, number, favorite } = request.body
-
-  Person.findByIdAndUpdate(
-    request.params.id, 
-    { name, number, favorite },
-    { new: true, runValidators: true, context: 'query' }
-  ) 
-    .then(updatedPerson => {
-      response.json(updatedPerson)
-    })
-    .catch(error => next(error))
+// Get one person by ID
+app.get('/api/persons/:id', async (req, res, next) => {
+  try {
+    const person = await Person.findById(req.params.id)
+    if (person) res.json(person)
+    else res.status(404).end()
+  } catch (error) {
+    next(error)
+  }
 })
 
-//DELETES IDENTIFIED RESOURCE
-app.delete('/api/persons/:id', (request, response, next) => {
-  Person.findByIdAndDelete(request.params.id)
-    .then(result => {
-      response.status(204).end()
-    })
-    .catch(error => next(error))
+// Create new person
+app.post('/api/persons', async (req, res, next) => {
+  const { name, number } = req.body
+  if (!name || !number) return res.status(400).json({ error: 'content missing' })
+
+  const person = new Person({ name, number, favorite: false })
+  try {
+    const savedPerson = await person.save()
+    res.json(savedPerson)
+  } catch (error) {
+    next(error)
+  }
 })
 
-const errorHandler = (error, request, response, next) => {
+// Update person
+app.put('/api/persons/:id', async (req, res, next) => {
+  const { name, number, favorite } = req.body
+  try {
+    const updatedPerson = await Person.findByIdAndUpdate(
+      req.params.id,
+      { name, number, favorite },
+      { new: true, runValidators: true, context: 'query' }
+    )
+    res.json(updatedPerson)
+  } catch (error) {
+    next(error)
+  }
+})
+
+// Delete person
+app.delete('/api/persons/:id', async (req, res, next) => {
+  try {
+    await Person.findByIdAndDelete(req.params.id)
+    res.status(204).end()
+  } catch (error) {
+    next(error)
+  }
+})
+
+// ====== ERROR HANDLER ======
+app.use((error, req, res, next) => {
   console.error(error.message)
-
-  if (error.name === 'CastError') {
-    return response.status(400).send({ error: 'malformatted id' })
-  } else if (error.name === 'ValidationError') {
-    return response.status(400).json({ error: error.message })
-  }
-
+  if (error.name === 'CastError') return res.status(400).send({ error: 'malformatted id' })
+  if (error.name === 'ValidationError') return res.status(400).json({ error: error.message })
   next(error)
-}
-app.use(errorHandler)
+})
 
-const PORT = process.env.PORT || 3001
+// ====== START SERVER ======
+const PORT = process.env.PORT || 3003
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 })
+
